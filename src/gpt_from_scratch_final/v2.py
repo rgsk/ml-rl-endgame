@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 # hyperparameters
 batch_size = 32 # how many independent sequences will we process in parallel?
-block_size = 8 # what is the maximum context length for predictions?
+block_size = 100 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 300
 learning_rate = 1e-3
@@ -194,6 +194,9 @@ m = model.to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 print(f'Device: {device}')
+# number of parameters in the model
+print(sum(p.numel() for p in m.parameters()), 'parameters')
+
 
 for iter in range(max_iters):
 
