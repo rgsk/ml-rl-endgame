@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+from typing import cast
 
 import tiktoken
 import torch
@@ -40,7 +41,8 @@ class Head(nn.Module):
         wei = (
             q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5
         )  # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))  # (B, T, T)
+        tril = cast(torch.Tensor, self.tril)
+        wei = wei.masked_fill(tril[:T, :T] == 0, float("-inf"))  # (B, T, T)
         wei = F.softmax(wei, dim=-1)  # (B, T, T)
         # perform the weighted aggregation of the values
         v = self.value(x)  # (B,T,hs)
@@ -107,7 +109,8 @@ class CausalSelfAttention(nn.Module):
         )  # (B, nh, T, hs)
         # attention (materializes the large (T,T) matrix for all the queries and keys)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+        bias = cast(torch.Tensor, self.bias)
+        att = att.masked_fill(bias[:, :, :T, :T] == 0, float("-inf"))
         att = F.softmax(att, dim=-1)
         y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = (
@@ -146,19 +149,21 @@ class Block(nn.Module):
         return x
 
 
+class GPTTransformer(nn.Module):
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
+        self.wpe = nn.Embedding(config.block_size, config.n_embd)
+        self.h = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
+        self.ln_f = nn.LayerNorm(config.n_embd)
+
+
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.config = config
 
-        self.transformer = nn.ModuleDict(
-            dict(
-                wte=nn.Embedding(config.vocab_size, config.n_embd),
-                wpe=nn.Embedding(config.block_size, config.n_embd),
-                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-                ln_f=nn.LayerNorm(config.n_embd),
-            )
-        )
+        self.transformer = GPTTransformer(config)
         self.lm_head = nn.Linear(
             config.n_embd,
             config.vocab_size,
@@ -181,7 +186,7 @@ class GPT(nn.Module):
         x = tok_emb + pos_emb
         # forward the blocks of the transformer
         for block in self.transformer.h:
-            x = block(x)
+            x = cast(Block, block)(x)
         # forward the final layernorm and the classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)  # (B, T, vocab_size)
