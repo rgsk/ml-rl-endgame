@@ -216,6 +216,13 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
 
+    def __call__(
+        self, idx: torch.Tensor, targets: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        return cast(
+            tuple[torch.Tensor, torch.Tensor | None], super().__call__(idx, targets)
+        )
+
     @classmethod
     def from_pretrained(cls, model_type):
         """Loads pretrained GPT-2 model weights from huggingface"""
@@ -343,6 +350,7 @@ def train():
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
         logits, loss = model(x, y)
+        assert loss is not None
         loss.backward()
         optimizer.step()
         print(f"step {i}, loss: {loss.item()}")
