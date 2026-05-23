@@ -18,6 +18,54 @@ class GPTConfig:
     n_embd: int = 768  # embedding dimension
 
 
+class Head(nn.Module):
+    """one head of self-attention"""
+
+    def __init__(self, config: GPTConfig, head_size: int):
+        super().__init__()
+        self.key = nn.Linear(config.n_embd, head_size, bias=False)
+        self.query = nn.Linear(config.n_embd, head_size, bias=False)
+        self.value = nn.Linear(config.n_embd, head_size, bias=False)
+        self.register_buffer(
+            "tril", torch.tril(torch.ones(config.block_size, config.block_size))
+        )
+
+    def forward(self, x):
+        # input of size (batch, time-step, channels)
+        # output of size (batch, time-step, head size)
+        B, T, C = x.shape
+        k = self.key(x)  # (B,T,hs)
+        q = self.query(x)  # (B,T,hs)
+        # compute attention scores ("affinities")
+        wei = (
+            q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5
+        )  # (B, T, hs) @ (B, hs, T) -> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))  # (B, T, T)
+        wei = F.softmax(wei, dim=-1)  # (B, T, T)
+        # perform the weighted aggregation of the values
+        v = self.value(x)  # (B,T,hs)
+        out = wei @ v  # (B, T, T) @ (B, T, hs) -> (B, T, hs)
+        return out
+
+
+class MultiHeadAttention(nn.Module):
+    """multiple heads of self-attention in parallel"""
+
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        head_size = config.n_embd // config.n_head
+        self.heads = nn.ModuleList(
+            [Head(config, head_size) for _ in range(config.n_head)]
+        )
+        self.proj = nn.Linear(config.n_embd, config.n_embd)
+
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.proj(out)
+        return out
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
