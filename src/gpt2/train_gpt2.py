@@ -339,7 +339,7 @@ def initialize() -> GPT:
 
     torch.set_float32_matmul_precision("high")
 
-    model = GPT(GPTConfig())
+    model = GPT(GPTConfig(vocab_size=50304))
     model.to(device)
 
     return model
