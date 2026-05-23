@@ -329,7 +329,7 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 print(f"using device: {device}")
 
 
-def initialize():
+def initialize() -> GPT:
     torch.manual_seed(1337)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(1337)
@@ -344,6 +344,7 @@ def initialize():
 
 def train():
     model = initialize()
+    compiled_model = torch.compile(model)
 
     train_loader = DataLoaderLite(B=2, T=1024)
 
@@ -357,7 +358,7 @@ def train():
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
         with torch.autocast(device_type=device, dtype=torch.bfloat16):
-            logits, loss = model(x, y)
+            logits, loss = compiled_model(x, y)
 
         assert loss is not None
         loss.backward()
