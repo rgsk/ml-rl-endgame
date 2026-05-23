@@ -31,7 +31,7 @@ class Head(nn.Module):
             "tril", torch.tril(torch.ones(config.block_size, config.block_size))
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # input of size (batch, time-step, channels)
         # output of size (batch, time-step, head size)
         B, T, C = x.shape
@@ -62,7 +62,7 @@ class MultiHeadAttention(nn.Module):
         )
         self.proj = nn.Linear(config.n_embd, config.n_embd)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.proj(out)
         return out
@@ -86,7 +86,7 @@ class CausalSelfAttention(nn.Module):
             ),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = (
             x.shape
         )  # batch size, sequence length, embedding dimensionality (n_embd)
@@ -128,7 +128,7 @@ class MLP(nn.Module):
         self.gelu = nn.GELU(approximate="tanh")
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
@@ -143,7 +143,7 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
@@ -173,7 +173,9 @@ class GPT(nn.Module):
         # weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
 
-    def forward(self, idx, targets=None):
+    def forward(
+        self, idx: torch.Tensor, targets: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         # idx is of shape (B, T)
         B, T = idx.size()
         assert T <= self.config.block_size, (
@@ -186,7 +188,7 @@ class GPT(nn.Module):
         x = tok_emb + pos_emb
         # forward the blocks of the transformer
         for block in self.transformer.h:
-            x = cast(Block, block)(x)
+            x = block(x)
         # forward the final layernorm and the classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)  # (B, T, vocab_size)
