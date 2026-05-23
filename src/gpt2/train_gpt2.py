@@ -173,6 +173,25 @@ class GPT(nn.Module):
         # weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
 
+        # init params
+        self.apply(self._init_weights)
+        self._init_weights_by_name()
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+
+    def _init_weights_by_name(self) -> None:
+        with torch.no_grad():
+            for name, param in self.named_parameters():
+                if name == "transformer.wpe.weight":
+                    torch.nn.init.normal_(param, mean=0.0, std=0.01)
+                elif name.endswith("c_proj.weight"):
+                    std = 0.02 * (2 * self.config.n_layer) ** -0.5
+                    torch.nn.init.normal_(param, mean=0.0, std=std)
+
     def forward(
         self, idx: torch.Tensor, targets: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -301,11 +320,21 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 print(f"using device: {device}")
 
 
-def train():
-    train_loader = DataLoaderLite(B=4, T=32)
+def initialize():
+    torch.manual_seed(1337)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1337)
 
     model = GPT(GPTConfig())
     model.to(device)
+
+    return model
+
+
+def train():
+    model = initialize()
+
+    train_loader = DataLoaderLite(B=4, T=32)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
@@ -418,4 +447,6 @@ def test_hf_model():
         print(">", decoded)
 
 
+# initialize()
 train()
+# test_gpt_model_with_hf_weights()
