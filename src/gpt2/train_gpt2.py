@@ -380,7 +380,17 @@ def train():
     model = initialize()
     compiled_model = torch.compile(model)
 
-    train_loader = DataLoaderLite(B=2, T=1024)
+    total_batch_size = 524288  # 2**19, ~0.5M, in number of tokens
+    B = 2  # micro batch size
+    T = 1024  # sequence length
+    assert total_batch_size % (B * T) == 0, (
+        "make sure total_batch_size is divisible by B * T"
+    )
+    grad_accum_steps = total_batch_size // (B * T)
+    print(f"total desired batch size: {total_batch_size}")
+    print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+
+    train_loader = DataLoaderLite(B=B, T=T)
 
     optimizer = model.configure_optimizers(
         weight_decay=0.1, learning_rate=6e-4, device=device
@@ -410,14 +420,18 @@ def train():
         if device == "cuda":
             torch.cuda.synchronize()
         t0 = time.time()
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
-            logits, loss = compiled_model(x, y)
+        loss_accum = 0.0
+        for micro_step in range(grad_accum_steps):
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                logits, loss = compiled_model(x, y)
 
-        assert loss is not None
-        loss.backward()
+            assert loss is not None
+            loss = loss / grad_accum_steps
+            loss_accum += loss.detach()
+            loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         # determine and set the learning rate for this iteration
         lr = get_lr(step)
@@ -428,10 +442,10 @@ def train():
             torch.cuda.synchronize()
         t1 = time.time()
         dt = t1 - t0  # time difference in seconds
-        tokens_processed = train_loader.B * train_loader.T
+        tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
         tokens_per_sec = tokens_processed / dt
         print(
-            f"step {step:4d} | loss: {loss.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt * 1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}"
+            f"step {step:4d} | loss: {loss_accum:.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt * 1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}"
         )
 
 
