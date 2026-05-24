@@ -540,7 +540,7 @@ for step in range(max_steps):
         while xgen.size(1) < max_length:
             # forward the model to get the logits
             with torch.no_grad():
-                idx_cond = xgen[:, -model.config.block_size :]
+                idx_cond = xgen[:, -raw_model.config.block_size :]
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(idx_cond)  # (B, T, vocab_size)
                 # take the logits at the last position
@@ -627,7 +627,7 @@ def test_gpt_model_with_hf_weights():
     while x.size(1) < max_length:
         # forward the model to get the logits
         with torch.no_grad():
-            idx_cond = x[:, -model.config.block_size :]
+            idx_cond = x[:, -raw_model.config.block_size :]
             logits, _ = model(idx_cond)  # (B, T, vocab_size)
             # take the logits at the last position
             logits = logits[:, -1, : enc.n_vocab]  # (B, GPT-2 vocab size)
