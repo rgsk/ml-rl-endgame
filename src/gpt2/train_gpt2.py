@@ -356,6 +356,12 @@ class DataLoaderLite:
 
 # -----------------------------------------------------------------------------
 
+# simple launch:
+# python train_gpt2.py
+# DDP launch for e.g. 8 GPUs:
+# torchrun --standalone --nproc_per_node=1 train_gpt2.py
+
+
 # set up DDP (distributed data parallel).
 # torchrun command sets the env variables RANK, LOCAL_RANK, and WORLD_SIZE
 ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
