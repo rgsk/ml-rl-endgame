@@ -1,3 +1,4 @@
+import argparse
 import inspect
 import math
 import os
@@ -5,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, cast
 
+import numpy as np
 import tiktoken
 import torch
 import torch.distributed as dist
@@ -14,6 +16,20 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # -------------------------------------------------
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="train on data/edu_fineweb_debug instead of data/edu_fineweb10B",
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+data_root = "data/edu_fineweb_debug" if args.debug else "data/edu_fineweb10B"
 
 
 @dataclass
@@ -308,41 +324,53 @@ class GPT(nn.Module):
             {"params": decay_params, "weight_decay": weight_decay},
             {"params": nodecay_params, "weight_decay": 0.0},
         ]
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(
-            f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
-        )
-        print(
-            f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
-        )
+        # num_decay_params = sum(p.numel() for p in decay_params)
+        # num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        # print(
+        #     f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
+        # )
+        # print(
+        #     f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
+        # )
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and "cuda" in device
-        print(f"using fused AdamW: {use_fused}")
+        # print(f"using fused AdamW: {use_fused}")
         optimizer = torch.optim.AdamW(
             optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused
         )
         return optimizer
 
 
+def load_tokens(filename):
+    npt = np.load(filename)
+    npt = npt.astype(np.int32)  # added after video
+    ptt = torch.tensor(npt, dtype=torch.long)
+    return ptt
+
+
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes):
+    def __init__(self, B, T, process_rank, num_processes, split, data_root):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
+        assert split in {"train", "val"}
 
-        # at init load tokens from disk and store them in memory
-        with open("public/input.txt", "r") as f:
-            text = f.read()
-        enc = tiktoken.get_encoding("gpt2")
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens)
-        print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if split in s]
+        shards = sorted(shards)
+        shards = [os.path.join(data_root, s) for s in shards]
+        self.shards = shards
+        assert len(shards) > 0, f"no shards found for split {split}"
+        if master_process:
+            print(f"found {len(shards)} shards for split {split} in {data_root}")
+        self.reset()
 
-        # state
+    def reset(self):
+        # state, init at shard zero
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
@@ -352,9 +380,11 @@ class DataLoaderLite:
         y = (buf[1:]).view(B, T)  # targets
         # advance the position in the tensor
         self.current_position += B * T * self.num_processes
-        # if loading the next batch would be out of bounds, reset
+        # if loading the next batch would be out of bounds, advance to next shard
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
-            self.current_position = self.B * self.T * self.process_rank
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
+            self.current_position = B * T * self.process_rank
         return x, y
 
 
@@ -372,14 +402,14 @@ ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
 if ddp:
     # use of DDP atm demands CUDA, we set the device appropriately according to rank
     assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
-    init_process_group(backend="nccl")
     ddp_rank = int(os.environ["RANK"])
     ddp_local_rank = int(os.environ["LOCAL_RANK"])
     ddp_world_size = int(os.environ["WORLD_SIZE"])
-    print(f"{ddp_world_size=}")
     device = f"cuda:{ddp_local_rank}"
-    torch.cuda.set_device(device)
+    torch.cuda.set_device(ddp_local_rank)
+    init_process_group(backend="nccl")
     master_process = ddp_rank == 0  # this process will do logging, checkpointing etc.
+    device_type = "cuda"
 else:
     # vanilla, non-DDP run
     ddp_rank = 0
@@ -392,6 +422,7 @@ else:
         device = "cuda"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = "mps"
+    device_type = "cuda" if device.startswith("cuda") else device
     print(f"using device: {device}")
 
 
@@ -401,19 +432,25 @@ if torch.cuda.is_available():
 
 total_batch_size = 524288  # 2**19, ~0.5M, in number of tokens
 # total_batch_size = 2 * 1024 * 4
-B = 16  # micro batch size
+B = 2 if args.debug else 16  # micro batch size
 T = 1024  # sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, (
     "make sure total_batch_size is divisible by B * T * ddp_world_size"
 )
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 if master_process:
+    print(f"using data root: {data_root}")
     print(f"total desired batch size: {total_batch_size}")
     print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
 
 
 train_loader = DataLoaderLite(
-    B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size
+    B=B,
+    T=T,
+    process_rank=ddp_rank,
+    num_processes=ddp_world_size,
+    split="train",
+    data_root=data_root,
 )
 
 torch.set_float32_matmul_precision("high")
@@ -429,8 +466,8 @@ raw_model = model.module if ddp else model
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+warmup_steps = 715
+max_steps = 19073
 
 
 def get_lr(it):
@@ -454,7 +491,7 @@ optimizer = raw_model.configure_optimizers(
 )
 
 for step in range(max_steps):
-    if device == "cuda":
+    if device_type == "cuda":
         torch.cuda.synchronize()
     t0 = time.time()
     optimizer.zero_grad()
@@ -464,7 +501,7 @@ for step in range(max_steps):
         x, y = x.to(device), y.to(device)
         if ddp:
             model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
 
         assert loss is not None
@@ -479,7 +516,7 @@ for step in range(max_steps):
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
     optimizer.step()
-    if device == "cuda":
+    if device_type == "cuda":
         torch.cuda.synchronize()
     t1 = time.time()
     dt = t1 - t0  # time difference in seconds
