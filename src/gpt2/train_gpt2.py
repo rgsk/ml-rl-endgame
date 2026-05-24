@@ -470,7 +470,7 @@ torch.set_float32_matmul_precision("high")
 model: Any = GPT(GPTConfig(vocab_size=50304))
 # model = GPT.from_pretrained("gpt2") # or init from OpenAI GPT-2
 model.to(device)
-model: Any = torch.compile(model)
+# model: Any = torch.compile(model)
 if ddp:
     model: Any = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model
