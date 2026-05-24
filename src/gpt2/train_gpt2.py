@@ -357,9 +357,9 @@ class DataLoaderLite:
 # -----------------------------------------------------------------------------
 
 # simple launch:
-# python train_gpt2.py
+# python src/gpt2/train_gpt2.py
 # DDP launch for e.g. 8 GPUs:
-# torchrun --standalone --nproc_per_node=1 train_gpt2.py
+# torchrun --standalone --nproc_per_node=2 src/gpt2/train_gpt2.py
 
 
 # set up DDP (distributed data parallel).
@@ -404,8 +404,6 @@ def initialize() -> GPT:
 
 
 def train():
-    model = initialize()
-    compiled_model = torch.compile(model)
 
     total_batch_size = 524288  # 2**19, ~0.5M, in number of tokens
     # total_batch_size = 2 * 1024 * 4
@@ -424,6 +422,9 @@ def train():
     import sys
 
     sys.exit(0)
+
+    model = initialize()
+    compiled_model = torch.compile(model)
 
     train_loader = DataLoaderLite(B=B, T=T)
 
