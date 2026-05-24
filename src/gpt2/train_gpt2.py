@@ -325,9 +325,11 @@ class GPT(nn.Module):
 
 
 class DataLoaderLite:
-    def __init__(self, B, T):
+    def __init__(self, B, T, process_rank, num_processes):
         self.B = B
         self.T = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
 
         # at init load tokens from disk and store them in memory
         with open("public/input.txt", "r") as f:
@@ -339,7 +341,7 @@ class DataLoaderLite:
         print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
 
         # state
-        self.current_position = 0
+        self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
         B, T = self.B, self.T
@@ -347,10 +349,10 @@ class DataLoaderLite:
         x = (buf[:-1]).view(B, T)  # inputs
         y = (buf[1:]).view(B, T)  # targets
         # advance the position in the tensor
-        self.current_position += B * T
+        self.current_position += B * T * self.num_processes
         # if loading the next batch would be out of bounds, reset
-        if self.current_position + (B * T + 1) > len(self.tokens):
-            self.current_position = 0
+        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+            self.current_position = self.B * self.T * self.process_rank
         return x, y
 
 
@@ -418,16 +420,12 @@ def train():
         print(f"total desired batch size: {total_batch_size}")
         print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
 
-    print("I am GPU", ddp_rank)
-
-    import sys
-
-    sys.exit(0)
-
     model = initialize()
     compiled_model = torch.compile(model)
 
-    train_loader = DataLoaderLite(B=B, T=T)
+    train_loader = DataLoaderLite(
+        B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size
+    )
 
     optimizer = model.configure_optimizers(
         weight_decay=0.1, learning_rate=6e-4, device=device
