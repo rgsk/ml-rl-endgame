@@ -1,5 +1,6 @@
 import inspect
 import math
+import os
 import time
 from dataclasses import dataclass
 from typing import cast
@@ -7,6 +8,7 @@ from typing import cast
 import tiktoken
 import torch
 import torch.nn as nn
+from torch.distributed import init_process_group
 from torch.nn import functional as F
 
 # -------------------------------------------------
@@ -354,13 +356,32 @@ class DataLoaderLite:
 
 # -----------------------------------------------------------------------------
 
-# attempt to autodetect the device
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps"
-print(f"using device: {device}")
+# set up DDP (distributed data parallel).
+# torchrun command sets the env variables RANK, LOCAL_RANK, and WORLD_SIZE
+ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
+if ddp:
+    # use of DDP atm demands CUDA, we set the device appropriately according to rank
+    assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
+    init_process_group(backend="nccl")
+    ddp_rank = int(os.environ["RANK"])
+    ddp_local_rank = int(os.environ["LOCAL_RANK"])
+    ddp_world_size = int(os.environ["WORLD_SIZE"])
+    device = f"cuda:{ddp_local_rank}"
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0  # this process will do logging, checkpointing etc.
+else:
+    # vanilla, non-DDP run
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    # attempt to autodetect device
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    print(f"using device: {device}")
 
 
 def initialize() -> GPT:
@@ -381,7 +402,8 @@ def train():
     compiled_model = torch.compile(model)
 
     total_batch_size = 524288  # 2**19, ~0.5M, in number of tokens
-    B = 2  # micro batch size
+    # total_batch_size = 2 * 1024 * 4
+    B = 16  # micro batch size
     T = 1024  # sequence length
     assert total_batch_size % (B * T) == 0, (
         "make sure total_batch_size is divisible by B * T"
