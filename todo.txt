@@ -1,4 +1,6 @@
 high priority - 
+manual backprop
+image models
 understand hellaswag eval code
 try model checkpointing and resuming training
 try finetuning
