@@ -1,1 +1,9 @@
-test multihead attn instead of causal attn
+high priority - 
+understand hellaswag eval code
+try model checkpointing and resuming training
+try finetuning
+more evals
+
+
+low priority -
+try ssh setup with runpod
